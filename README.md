@@ -76,7 +76,7 @@ In VS Code: install the Python + Jupyter extensions, then select the
 | Macro (yfinance: DXY, VIX, NASDAQ, S&P, yields) | No |
 | On-chain (CoinMetrics Community / Glassnode / CryptoQuant) | CoinMetrics Community: partially free; others: yes (`.env`) |
 | News (CryptoCompare) | Yes (`.env`, `CC_API_KEY`) |
-| LLM event classification | Yes (`.env`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) |
+| LLM event classification | Yes (`.env`, `DEEPSEEK_API_KEY` preferred — cheap; or `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) |
 
 Everything in the "No" rows is already implemented and runnable today.
 Everything in the "Yes" rows has a working module with the interface wired

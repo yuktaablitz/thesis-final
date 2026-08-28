@@ -144,6 +144,9 @@ def _append_llm_cache(rec: dict) -> None:
         f.write(json.dumps(rec) + "\n")
 
 
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+
 def _classify_one(title: str, body: str, event_types: list[str], client_kind: str, client) -> dict:
     prompt = EVENT_PROMPT_TEMPLATE.format(
         event_types=event_types, title=title, body=(body or "")[:2000]
@@ -154,9 +157,19 @@ def _classify_one(title: str, body: str, event_types: list[str], client_kind: st
             messages=[{"role": "user", "content": prompt}],
         )
         text = resp.content[0].text
+    elif client_kind == "deepseek":
+        # DeepSeek's API is OpenAI-compatible; deepseek-chat is the cheap/fast model,
+        # plenty for a fixed-schema classification task like this one.
+        resp = client.chat.completions.create(
+            model="deepseek-chat", max_tokens=200,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.choices[0].message.content
     else:  # openai
         resp = client.chat.completions.create(
             model="gpt-4o-mini", max_tokens=200,
+            response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
         text = resp.choices[0].message.content
@@ -170,17 +183,27 @@ def classify_news_events(news_df: pd.DataFrame, max_articles: int | None = None)
     Classifies each article's event_type/impact_direction/impact_strength via
     an LLM, using and updating data/cache/llm_event_cache.jsonl so every
     article is sent to the LLM at most once, ever.
+
+    Provider priority: DEEPSEEK_API_KEY > ANTHROPIC_API_KEY > OPENAI_API_KEY
+    (DeepSeek preferred — meaningfully cheaper for a high-volume, fixed-schema
+    classification task like this one; set only the one you want to use).
     """
     cfg = load_config("approach1.yaml")
     event_types = cfg["news_event_types"]
 
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     openai_key = os.environ.get("OPENAI_API_KEY")
-    if not anthropic_key and not openai_key:
-        log.warning("no ANTHROPIC_API_KEY or OPENAI_API_KEY set — skipping LLM event classification")
+    if not deepseek_key and not anthropic_key and not openai_key:
+        log.warning("no DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY set — "
+                    "skipping LLM event classification")
         return news_df
 
-    if anthropic_key:
+    if deepseek_key:
+        import openai
+        client = openai.OpenAI(api_key=deepseek_key, base_url=DEEPSEEK_BASE_URL)
+        client_kind = "deepseek"
+    elif anthropic_key:
         import anthropic
         client, client_kind = anthropic.Anthropic(api_key=anthropic_key), "anthropic"
     else:
