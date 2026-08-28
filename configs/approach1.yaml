@@ -1,0 +1,81 @@
+# Approach 1 — BTC Market Intelligence Model
+# Single source of truth for target definition, sampling, splits, and which
+# feature families are switched on. Every module reads this file rather than
+# hardcoding constants, so the leakage-safe split logic never drifts.
+
+symbol: BTCUSDT
+base_interval: 1h
+
+target:
+  horizon_hours: 24          # predict close(t+24h) > close(t)
+
+sampling:
+  primary_step_hours: 6      # headline result
+  benchmark_step_hours: 24   # one prediction/day
+  sensitivity_step_hours: 1  # investigate only, not headline
+
+sequence:
+  windows_hours: [72, 168]
+
+split:
+  train_start: "2019-01-01"
+  train_end: "2023-12-31"
+  validation_start: "2024-01-01"
+  validation_end: "2024-12-31"
+  test_start: "2025-01-01"
+  test_end: null             # null = latest common usable date across sources
+
+feature_families:
+  spot_technical: true
+  spot_order_flow: true
+  derivatives: true
+  onchain: true               # requires an on-chain API key, see .env.example
+  fear_greed: true
+  news_finbert: true          # requires CC_API_KEY
+  news_llm_events: true       # requires ANTHROPIC_API_KEY or OPENAI_API_KEY
+  macro: true                 # yfinance, no key required
+
+onchain:
+  tier1: [mvrv, mvrv_zscore, sopr, asopr, nupl, realized_price, price_to_realized_price]
+  tier2: [exchange_inflow, exchange_outflow, exchange_netflow, exchange_reserve]
+  tier3: [active_addresses, transaction_count, transaction_volume, hash_rate, fees]
+
+macro_tickers:
+  dxy: "DX-Y.NYB"
+  vix: "^VIX"
+  nasdaq: "^IXIC"
+  sp500: "^GSPC"
+  ust2y: "^IRX"     # short-end proxy; swap for FRED DGS2 if you get a FRED key
+  ust10y: "^TNX"
+
+news_event_types:
+  - ETF
+  - REGULATION
+  - MACRO
+  - FED
+  - HACK_SECURITY
+  - EXCHANGE
+  - INSTITUTIONAL
+  - MINING
+  - HALVING
+  - LIQUIDATION
+  - WHALE
+  - ADOPTION
+  - TECHNOLOGY
+  - OTHER
+
+models:
+  xgboost: true
+  tcn: true
+  cnn_lstm: true
+  ensemble: false   # only after validation supports it (Stage 13)
+
+ablation_order:
+  - spot_technical
+  - spot_order_flow
+  - derivatives
+  - onchain
+  - fear_greed
+  - news_finbert
+  - news_llm_events
+  - macro

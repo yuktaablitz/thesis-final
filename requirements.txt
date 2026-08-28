@@ -1,0 +1,45 @@
+# Core
+pandas>=2.2
+numpy>=1.26
+scipy>=1.12
+scikit-learn>=1.4
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# Data / HTTP
+requests>=2.31
+tqdm>=4.66
+joblib>=1.3
+pyarrow>=15.0        # parquet caching
+
+# Technical analysis
+ta>=0.11
+
+# Tabular models
+xgboost>=2.0
+lightgbm>=4.3
+shap>=0.45
+boruta>=0.4          # feature_selection.py falls back gracefully if unavailable
+
+# Macro data (no API key needed)
+yfinance>=0.2.40
+
+# Deep learning (local: MPS on Apple Silicon; Colab: CUDA)
+torch>=2.2
+torchvision>=0.17
+
+# NLP (FinBERT, LLM classification pipeline)
+transformers>=4.40
+accelerate>=0.30
+
+# Plotting
+matplotlib>=3.8
+
+# LLM event classification (Stage 7) — only one of these is required
+anthropic>=0.34
+openai>=1.40
+
+# Dev / testing
+pytest>=8.0
+jupyter>=1.0
+ipykernel>=6.29
