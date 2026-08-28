@@ -1,25 +1,24 @@
 """
-Automated leakage tests. Run these after any change to
-src/datasets/{labels,sequences}.py — before trusting any experiment result.
+Automated leakage tests for the rebuilt pipeline (config.py + src/samples.py
++ src/leakage.py). Run after any change to those modules, before trusting
+any result:
 
     pytest tests/test_leakage.py -v
 """
-from __future__ import annotations
-
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.datasets.labels import add_target
-from src.datasets.sequences import build_sample_index, chronological_split
-from src.evaluation.leakage_checks import assert_leakage_safe_splits
+from config import DATA_END, DATA_START, TEST_START, VALIDATION_START
+from src.leakage import assert_no_label_overlap, assert_point_in_time
+from src.samples import create_target, select_prediction_times, split_samples
 
 
 @pytest.fixture
-def synthetic_hourly_df() -> pd.DataFrame:
-    """~6.5 years of synthetic hourly BTC-like data, no network calls."""
+def synthetic_master() -> pd.DataFrame:
+    """Synthetic hourly BTC-like data spanning config.DATA_START -> DATA_END, no network calls."""
     rng = np.random.default_rng(42)
-    timestamps = pd.date_range("2019-01-01", "2025-06-01", freq="1h", tz="UTC")
+    timestamps = pd.date_range(DATA_START, DATA_END, freq="1h", tz="UTC", inclusive="left")
     log_returns = rng.normal(0, 0.003, size=len(timestamps))
     close = 5000 * np.exp(np.cumsum(log_returns))
     df = pd.DataFrame({
@@ -27,115 +26,87 @@ def synthetic_hourly_df() -> pd.DataFrame:
         "open": close, "high": close * 1.001, "low": close * 0.999, "close": close,
         "volume": rng.uniform(100, 1000, size=len(timestamps)),
     })
-    return add_target(df)
+    return create_target(df)
 
 
-def test_target_definition(synthetic_hourly_df):
-    df = synthetic_hourly_df
-    row = df.iloc[100]
-    future_row = df.iloc[100 + 24]
+def test_target_definition(synthetic_master):
+    df = synthetic_master
+    row, future_row = df.iloc[1000], df.iloc[1024]
     assert future_row["timestamp"] - row["timestamp"] == pd.Timedelta(hours=24)
     expected_return = future_row["close"] / row["close"] - 1
     assert np.isclose(row["future_return_24h"], expected_return)
-    assert row["target"] == int(expected_return > 0)
+    assert int(row["target"]) == int(expected_return > 0)
     assert row["label_end_time"] == row["timestamp"] + pd.Timedelta(hours=24)
 
 
-def test_last_rows_unlabeled(synthetic_hourly_df):
-    tail = synthetic_hourly_df.tail(24)
+def test_last_rows_unlabeled(synthetic_master):
+    tail = synthetic_master.tail(24)
     assert tail["target"].isna().all()
 
 
+@pytest.mark.parametrize("step_hours,expected_hours", [(6, {0, 6, 12, 18}), (24, {0}), (1, set(range(24)))])
+def test_select_prediction_times_uses_clock_hours(synthetic_master, step_hours, expected_hours):
+    samples = select_prediction_times(synthetic_master, step_hours=step_hours)
+    assert set(samples["timestamp"].dt.hour.unique()) == expected_hours
+
+
 @pytest.mark.parametrize("step_hours", [1, 6, 24])
-@pytest.mark.parametrize("window_hours", [72, 168])
-def test_split_is_leakage_safe(synthetic_hourly_df, window_hours, step_hours):
-    """The condition this whole test file exists to enforce:
-        train.label_end_time      < validation_start
-        validation.label_end_time < test_start
-    """
-    idx = build_sample_index(synthetic_hourly_df, window_hours=window_hours, step_hours=step_hours)
-    splits = chronological_split(idx)  # raises AssertionError internally if violated
+def test_split_is_leakage_safe(synthetic_master, step_hours):
+    samples = select_prediction_times(synthetic_master, step_hours=step_hours)
+    train, val, test = split_samples(samples)
 
-    train, validation, test = splits["train"], splits["validation"], splits["test"]
-    assert len(train) > 0 and len(validation) > 0 and len(test) > 0
+    assert len(train) > 0 and len(val) > 0 and len(test) > 0
+    val_start, test_start = pd.Timestamp(VALIDATION_START), pd.Timestamp(TEST_START)
 
-    val_start = pd.Timestamp("2024-01-01", tz="UTC")
-    test_start = pd.Timestamp("2025-01-01", tz="UTC")
     assert train["label_end_time"].max() < val_start
-    assert validation["prediction_time"].min() >= val_start
-    assert validation["label_end_time"].max() < test_start
-    assert test["prediction_time"].min() >= test_start
+    assert val["timestamp"].min() >= val_start
+    assert val["label_end_time"].max() < test_start
+    assert test["timestamp"].min() >= test_start
 
-    # No sample appears in two splits.
-    train_idx, val_idx, test_idx = set(train["row_idx"]), set(validation["row_idx"]), set(test["row_idx"])
-    assert not (train_idx & val_idx)
-    assert not (val_idx & test_idx)
-    assert not (train_idx & test_idx)
-
-
-def test_chronological_split_excludes_boundary_crossers(synthetic_hourly_df):
-    """
-    chronological_split's train/validation filters ARE the leakage condition
-    (label_end_time < next period's start) — so a sample whose label would
-    cross into the next period is dropped from the earlier split rather than
-    included-then-flagged. Confirm that drop actually happens at the
-    train/validation boundary (Dec 31 23:00 prediction_time -> label_end_time
-    Jan 1 23:00, which is >= validation_start and must NOT end up in train).
-    """
-    idx = build_sample_index(synthetic_hourly_df, window_hours=72, step_hours=1)
-    splits = chronological_split(idx)
-    val_start = pd.Timestamp("2024-01-01", tz="UTC")
-
-    boundary_crossers = idx[
-        (idx["prediction_time"] < val_start) & (idx["label_end_time"] >= val_start)
-    ]
-    assert len(boundary_crossers) > 0, "test fixture should include some boundary-crossing samples"
-    assert not set(boundary_crossers["row_idx"]) & set(splits["train"]["row_idx"]), (
-        "a sample whose label reaches into the validation period leaked into train"
-    )
+    # assert_no_label_overlap must accept this split without raising.
+    assert_no_label_overlap(train, val, test)
 
 
 def test_leakage_guard_catches_corrupted_splits():
-    """
-    Independent test of the runtime guard (src.evaluation.leakage_checks),
-    used in notebooks right before training on whatever split dict was
-    actually built. Feed it a manually-constructed, deliberately leaky
-    splits dict (bypassing chronological_split's own filtering entirely)
-    and confirm it raises rather than passing silently.
-    """
-    val_start = pd.Timestamp("2024-01-01", tz="UTC")
-    test_start = pd.Timestamp("2025-01-01", tz="UTC")
+    """Independent test of the runtime guard: feed it a manually-built, deliberately leaky
+    set of splits (bypassing split_samples' own filtering) and confirm it raises."""
+    val_start = pd.Timestamp(VALIDATION_START)
 
     leaky_train = pd.DataFrame({
-        "row_idx": [1, 2],
-        "prediction_time": [val_start - pd.Timedelta(hours=2), val_start - pd.Timedelta(hours=1)],
-        # These labels reach 40h past validation_start — a real leak.
+        "timestamp": [val_start - pd.Timedelta(hours=2), val_start - pd.Timedelta(hours=1)],
         "label_end_time": [val_start + pd.Timedelta(hours=40), val_start + pd.Timedelta(hours=41)],
     })
     validation = pd.DataFrame({
-        "row_idx": [3], "prediction_time": [val_start], "label_end_time": [val_start + pd.Timedelta(hours=24)],
+        "timestamp": [val_start], "label_end_time": [val_start + pd.Timedelta(hours=24)],
     })
-    test = pd.DataFrame({
-        "row_idx": [4], "prediction_time": [test_start], "label_end_time": [test_start + pd.Timedelta(hours=24)],
-    })
+    test = pd.DataFrame({"timestamp": [], "label_end_time": []})
 
     with pytest.raises(AssertionError, match="LEAKAGE"):
-        assert_leakage_safe_splits({"train": leaky_train, "validation": validation, "test": test})
+        assert_no_label_overlap(leaky_train, validation, test)
 
 
-def test_leakage_guard_catches_overlapping_row_idx():
-    """Same sample appearing in two splits must also be caught, independent of timestamps."""
-    shared = pd.DataFrame({
-        "row_idx": [10], "prediction_time": [pd.Timestamp("2023-06-01", tz="UTC")],
-        "label_end_time": [pd.Timestamp("2023-06-02", tz="UTC")],
-    })
-    empty_like = shared.iloc[0:0]
+def test_leakage_guard_catches_duplicate_timestamps():
+    ts = pd.Timestamp(DATA_START)
+    dup = pd.DataFrame({"timestamp": [ts, ts], "label_end_time": [ts, ts] + pd.Timedelta(hours=24)})
+    empty = pd.DataFrame({"timestamp": [], "label_end_time": []})
     with pytest.raises(AssertionError, match="LEAKAGE"):
-        assert_leakage_safe_splits({"train": shared, "validation": shared, "test": empty_like})
+        assert_no_label_overlap(dup, empty, empty)
 
 
-def test_window_start_matches_window_hours(synthetic_hourly_df):
-    window_hours = 72
-    idx = build_sample_index(synthetic_hourly_df, window_hours=window_hours, step_hours=24)
-    sample = idx.iloc[10]
-    assert sample["prediction_time"] - sample["window_start"] == pd.Timedelta(hours=window_hours)
+def test_assert_point_in_time_passes_when_clean():
+    ts = pd.date_range("2024-01-01", periods=5, freq="1h", tz="UTC")
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "fng_available_at": ts - pd.Timedelta(hours=1),  # known before prediction time: fine
+    })
+    assert_point_in_time(df)  # must not raise
+
+
+def test_assert_point_in_time_catches_future_leak():
+    ts = pd.date_range("2024-01-01", periods=5, freq="1h", tz="UTC")
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "onchain_available_at": ts + pd.Timedelta(hours=1),  # known AFTER prediction time: a leak
+    })
+    with pytest.raises(AssertionError, match="LEAKAGE"):
+        assert_point_in_time(df)
