@@ -87,7 +87,7 @@ def test_leakage_guard_catches_corrupted_splits():
 
 def test_leakage_guard_catches_duplicate_timestamps():
     ts = pd.Timestamp(DATA_START)
-    dup = pd.DataFrame({"timestamp": [ts, ts], "label_end_time": [ts, ts] + pd.Timedelta(hours=24)})
+    dup = pd.DataFrame({"timestamp": [ts, ts], "label_end_time": [ts + pd.Timedelta(hours=24)] * 2})
     empty = pd.DataFrame({"timestamp": [], "label_end_time": []})
     with pytest.raises(AssertionError, match="LEAKAGE"):
         assert_no_label_overlap(dup, empty, empty)
